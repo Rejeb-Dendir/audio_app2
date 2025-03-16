@@ -39,6 +39,7 @@ dependencies:
   just_audio:
   audio_service:
   provider:
+  rxdart: ^0.28.0
 
 dev_dependencies:
   flutter_test:

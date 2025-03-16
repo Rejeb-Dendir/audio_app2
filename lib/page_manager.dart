@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:rxdart/rxdart.dart';
 import 'notifiers/play_button_notifier.dart';
 import 'notifiers/progress_notifier.dart';
 import 'notifiers/repeat_button_notifier.dart';
@@ -18,6 +19,14 @@ class PageManager extends ChangeNotifier {
   bool _isLastSong = true;
   bool _isShuffleModeEnabled = false;
 
+  // RxDart Subjects - act as both streams and sinks
+  final BehaviorSubject<Duration> _positionSubject =
+      BehaviorSubject<Duration>();
+  final BehaviorSubject<Duration> _bufferedPositionSubject =
+      BehaviorSubject<Duration>();
+  final BehaviorSubject<Duration> _totalDurationSubject =
+      BehaviorSubject<Duration>();
+
   // Getters
   String get currentSongTitle => _currentSongTitle;
   List<String> get playlist => _playlist;
@@ -32,10 +41,39 @@ class PageManager extends ChangeNotifier {
     await _loadPlaylist();
     _listenToChangesInPlaylist();
     _listenToPlaybackState();
-    _listenToCurrentPosition();
-    _listenToBufferedPosition();
-    _listenToTotalDuration();
+    _setupProgressStream();
     _listenToChangesInSong();
+  }
+
+  void _setupProgressStream() {
+    // Listen to position updates
+    AudioService.position.listen((position) {
+      _positionSubject.add(position);
+    });
+
+    // Listen to buffered position updates
+    _audioHandler.playbackState.listen((playbackState) {
+      _bufferedPositionSubject.add(playbackState.bufferedPosition);
+    });
+
+    // Listen to total duration updates
+    _audioHandler.mediaItem.listen((mediaItem) {
+      _totalDurationSubject.add(mediaItem?.duration ?? Duration.zero);
+    });
+
+    // Combine all three streams to update progress state efficiently
+    Rx.combineLatest3<Duration, Duration, Duration, ProgressBarState>(
+      _positionSubject.stream,
+      _bufferedPositionSubject.stream,
+      _totalDurationSubject.stream,
+      (position, bufferedPosition, duration) => ProgressBarState(
+        current: position,
+        buffered: bufferedPosition,
+        total: duration,
+      ),
+    ).listen((state) {
+      progressNotifier.value = state;
+    });
   }
 
   Future<void> _loadPlaylist() async {
@@ -82,39 +120,6 @@ class PageManager extends ChangeNotifier {
         _audioHandler.seek(Duration.zero);
         _audioHandler.pause();
       }
-    });
-  }
-
-  void _listenToCurrentPosition() {
-    AudioService.position.listen((position) {
-      final oldState = progressNotifier.value;
-      progressNotifier.value = ProgressBarState(
-        current: position,
-        buffered: oldState.buffered,
-        total: oldState.total,
-      );
-    });
-  }
-
-  void _listenToBufferedPosition() {
-    _audioHandler.playbackState.listen((playbackState) {
-      final oldState = progressNotifier.value;
-      progressNotifier.value = ProgressBarState(
-        current: oldState.current,
-        buffered: playbackState.bufferedPosition,
-        total: oldState.total,
-      );
-    });
-  }
-
-  void _listenToTotalDuration() {
-    _audioHandler.mediaItem.listen((mediaItem) {
-      final oldState = progressNotifier.value;
-      progressNotifier.value = ProgressBarState(
-        current: oldState.current,
-        buffered: oldState.buffered,
-        total: mediaItem?.duration ?? Duration.zero,
-      );
     });
   }
 
@@ -200,6 +205,10 @@ class PageManager extends ChangeNotifier {
 
   @override
   void dispose() {
+    // Close the subjects when the PageManager is disposed
+    _positionSubject.close();
+    _bufferedPositionSubject.close();
+    _totalDurationSubject.close();
     _audioHandler.customAction('dispose');
     super.dispose();
   }
